@@ -26,7 +26,7 @@ use socket2::SockAddr;
 use tokio::{io::Interest, net::UdpSocket};
 
 const CMSG_BUF_SIZE: usize =
-    unsafe { libc::CMSG_SPACE(mem::size_of::<libc::in_pktinfo>() as libc::c_uint) as usize };
+    unsafe { libc::CMSG_SPACE(mem::size_of::<libc::in6_pktinfo>() as libc::c_uint) as usize };
 
 /// # Safety
 /// The caller must ensure that:

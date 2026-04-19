@@ -205,6 +205,13 @@ jobs:
         run: |
           echo "RUSTFLAGS=-Clink-arg=/DEBUG:NONE" >> $GITHUB_ENV
 
+      - name: Setup dummy network interface for UDP tests
+        if: ${{ contains(matrix.os, 'ubuntu') }}
+        run: |
+          sudo ip link add zenoh_test0 type dummy
+          sudo ip addr add 198.51.100.1/24 dev zenoh_test0
+          sudo ip link set zenoh_test0 up
+
       - name: Install latest nextest
         uses: taiki-e/install-action@nextest
 
@@ -252,6 +259,13 @@ jobs:
         shell: bash
         run: |
           echo "RUSTFLAGS=-Clink-arg=/DEBUG:NONE" >> $GITHUB_ENV
+
+      - name: Setup dummy network interface for UDP tests
+        if: ${{ contains(matrix.os, 'ubuntu') }}
+        run: |
+          sudo ip link add zenoh_test0 type dummy
+          sudo ip addr add 198.51.100.1/24 dev zenoh_test0
+          sudo ip link set zenoh_test0 up
 
       - name: Install latest nextest
         uses: taiki-e/install-action@nextest

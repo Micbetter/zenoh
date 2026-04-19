@@ -103,7 +103,6 @@ mod tests {
         let client_target_addr =
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), server_addr.port());
 
-        // The connect() call makes the OS kernel strict about the source IP of incoming packets.
         client_socket.connect(client_target_addr).await.unwrap();
 
         client_socket.send(b"request").await.unwrap();
@@ -117,7 +116,6 @@ mod tests {
             IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))
         );
 
-        // Server replies using send_to with IP_PKTINFO
         server_pktinfo
             .send_to(b"response", &client_addr, &captured_local_ip)
             .await
@@ -130,5 +128,111 @@ mod tests {
             .unwrap();
 
         assert_eq!(&resp_buf[..n], b"response");
+    }
+
+    const AUXILIARY_IP: IpAddr = IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1));
+
+    async fn try_bind_auxiliary_ip() -> Option<UdpSocket> {
+        UdpSocket::bind(SocketAddr::new(AUXILIARY_IP, 0)).await.ok()
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn test_source_ip_drifts_without_pktinfo_send() {
+        if try_bind_auxiliary_ip().await.is_none() {
+            eprintln!(
+                "Skipping test: {} not available. \
+                 To run locally: sudo ip link add zenoh_test0 type dummy && \
+                 sudo ip addr add 198.51.100.1/24 dev zenoh_test0 && \
+                 sudo ip link set zenoh_test0 up",
+                AUXILIARY_IP
+            );
+            return;
+        }
+
+        let server_socket = UdpSocket::bind("0.0.0.0:0").await.unwrap();
+        let server_port = server_socket.local_addr().unwrap().port();
+
+        let client_socket = UdpSocket::bind(SocketAddr::new(AUXILIARY_IP, 0))
+            .await
+            .unwrap();
+        client_socket
+            .connect(SocketAddr::new(AUXILIARY_IP, server_port))
+            .await
+            .unwrap();
+
+        client_socket.send(b"ping").await.unwrap();
+
+        let mut buf = [0u8; 1024];
+        let (_, client_addr) = server_socket.recv_from(&mut buf).await.unwrap();
+
+        server_socket.send_to(b"pong", &client_addr).await.unwrap();
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            client_socket.recv(&mut buf),
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "Expected timeout due to source IP drift, but client received the reply. \
+             The kernel picked the correct source IP by chance or the bug is not reproducible \
+             in this environment."
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn test_pktinfo_send_prevents_source_ip_drift() {
+        if try_bind_auxiliary_ip().await.is_none() {
+            eprintln!(
+                "Skipping test: {} not available. \
+                 To run locally: sudo ip link add zenoh_test0 type dummy && \
+                 sudo ip addr add 198.51.100.1/24 dev zenoh_test0 && \
+                 sudo ip link set zenoh_test0 up",
+                AUXILIARY_IP
+            );
+            return;
+        }
+
+        let server_socket = UdpSocket::bind("0.0.0.0:0").await.unwrap();
+        let server_port = server_socket.local_addr().unwrap().port();
+        let server_pktinfo = PktInfoUdpSocket::new(Arc::new(server_socket)).unwrap();
+
+        let client_socket = UdpSocket::bind(SocketAddr::new(AUXILIARY_IP, 0))
+            .await
+            .unwrap();
+        client_socket
+            .connect(SocketAddr::new(AUXILIARY_IP, server_port))
+            .await
+            .unwrap();
+
+        client_socket.send(b"ping").await.unwrap();
+
+        let mut buf = [0u8; 1024];
+        let (size, client_addr, captured_local_ip) =
+            server_pktinfo.receive(&mut buf).await.unwrap();
+        assert_eq!(&buf[..size], b"ping");
+        assert_eq!(captured_local_ip.ip(), AUXILIARY_IP);
+
+        server_pktinfo
+            .send_to(b"pong", &client_addr, &captured_local_ip)
+            .await
+            .unwrap();
+
+        let mut resp_buf = [0u8; 1024];
+        let n = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            client_socket.recv(&mut resp_buf),
+        )
+        .await
+        .expect(
+            "Timeout: source IP drifted despite IP_PKTINFO send. \
+             The fix is not working correctly.",
+        )
+        .unwrap();
+
+        assert_eq!(&resp_buf[..n], b"pong");
     }
 }
